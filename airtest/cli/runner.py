@@ -102,7 +102,7 @@ class AirtestCase(unittest.TestCase):
             code = f.read()
         # replace tpl filepath with filepath in sub_dir
         code = re.sub("[\'\"](\w+.png)[\'\"]", "\"%s/\g<1>\"" % sub_dir, code)
-        exec(compile(code.encode("utf8"), pyfilepath, 'exec'), cls.scope)
+        exec compile(code.encode("utf8"), pyfilepath, 'exec') in cls.scope
 
 
 def setup_by_args(args):
