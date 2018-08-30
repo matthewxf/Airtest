@@ -3,10 +3,13 @@
 import json
 import os
 import io
+import six
 import sys
 import shutil
 import jinja2
+import traceback
 from copy import deepcopy
+from airtest.aircv import imread, get_resolution
 from airtest.cli.info import get_script_info
 from airtest.utils.compat import decode_path
 from six import PY3
@@ -41,7 +44,11 @@ class LogToHtml(object):
         if not plugins:
             return
         for plugin_name in plugins:
-            __import__(plugin_name)
+            print("try loading plugin: %s" % plugin_name)
+            try:
+                __import__(plugin_name)
+            except:
+                traceback.print_exc()
 
     def _load(self):
         logfile = self.logfile.encode(sys.getfilesystemencoding()) if not PY3 else self.logfile
@@ -79,7 +86,7 @@ class LogToHtml(object):
     def _translate_step(self, step):
         """translate single step"""
         name = step["data"]["name"]
-        title = self._translate_title(name)
+        title = self._translate_title(name, step)
         code = self._translate_code(step)
         desc = self._translate_desc(step, code)
         screen = self._translate_screen(step, code)
@@ -117,7 +124,7 @@ class LogToHtml(object):
         }
 
         for item in step["__children__"]:
-            if item["data"]["name"] == "try_log_screen":
+            if item["data"]["name"] == "try_log_screen" and isinstance(item["data"].get("ret", None), six.text_type):
                 src = item["data"]['ret']
                 if self.export_dir:
                     src = os.path.join(LOGDIR, src)
@@ -129,10 +136,10 @@ class LogToHtml(object):
         display_pos = None
 
         for item in step["__children__"]:
-            if item["data"]["name"] == "_cv_match" and item["data"]["ret"]:
+            if item["data"]["name"] == "_cv_match" and isinstance(item["data"].get("ret"), dict):
                 cv_result = item["data"]["ret"]
                 pos = cv_result['result']
-                if isinstance(pos, (list, tuple)):
+                if self.is_pos(pos):
                     display_pos = [round(pos[0]), round(pos[1])]
                 rect = self.div_rect(cv_result['rectangle'])
                 screen['rect'].append(rect)
@@ -141,9 +148,9 @@ class LogToHtml(object):
 
         if step["data"]["name"] in ["touch", "assert_exists", "wait", "exists"]:
             # 将图像匹配得到的pos修正为最终pos
-            if isinstance(step["data"].get("ret"), (list, tuple)):
+            if self.is_pos(step["data"].get("ret")):
                 display_pos = step["data"]["ret"]
-            elif isinstance(step["data"]["call_args"].get("v"), (list, tuple)):
+            elif self.is_pos(step["data"]["call_args"].get("v")):
                 display_pos = step["data"]["call_args"]["v"]
 
         elif step["data"]["name"] == "swipe":
@@ -155,7 +162,6 @@ class LogToHtml(object):
 
         if display_pos:
             screen["pos"].append(display_pos)
-
         return screen
 
     def _translate_traceback(self, step):
@@ -181,8 +187,16 @@ class LogToHtml(object):
             if isinstance(value, dict) and value.get("__class__") == "Template":
                 image_path = str(value['filename'])
                 if not self.export_dir:
-                    image_path = os.path.join(self.script_root, image_path)
+                    if os.path.isfile(os.path.join(self.script_root, image_path)):
+                        image_path = os.path.join(self.script_root, image_path)
+                    else:
+                        image_path = value['_filepath']
+                else:
+                    if not os.path.isfile(os.path.join(self.script_root, image_path)):
+                        shutil.copy(value['_filepath'], self.script_root)
                 arg["image"] = image_path
+                crop_img = imread(os.path.join(self.script_root, str(value['filename'])))
+                arg["resolution"] = get_resolution(crop_img)
         return code
 
     @staticmethod
@@ -201,7 +215,7 @@ class LogToHtml(object):
         if step['tag'] != "function":
             return None
         name = step['data']['name']
-        ret = step['data'].get('ret')
+        res = step['data'].get('ret')
         args = {i["key"]: i["value"] for i in code["args"]}
 
         desc = {
@@ -209,7 +223,7 @@ class LogToHtml(object):
             "touch": lambda: u"Touch %s" % ("target image" if isinstance(args['v'], dict) else "coordinates %s" % args['v']),
             "swipe": u"Swipe on screen",
             "wait": u"Wait for target image to appear",
-            "exists": lambda: u"Image %s exists" % ("" if ret else "not"),
+            "exists": lambda: u"Image %s exists" % ("" if res else "not"),
             "text": lambda: u"Input text:%s" % args.get('text'),
             "keyevent": lambda: u"Click [%s] button" % args.get('keyname'),
             "sleep": lambda: u"Wait for %s seconds" % args.get('secs'),
@@ -220,10 +234,10 @@ class LogToHtml(object):
         # todo: 最好用js里的多语言实现
         desc_zh = {
             "snapshot": lambda: u"截图描述: %s" % args.get("msg"),
-            "touch": lambda: u"点击 %s" % ("目标图片" if isinstance(args['v'], dict) else "屏幕坐标 %s" % args['v']),
+            "touch": lambda: u"点击 %s" % (u"目标图片" if isinstance(args['v'], dict) else u"屏幕坐标 %s" % args['v']),
             "swipe": u"滑动操作",
             "wait": u"等待目标图片出现",
-            "exists": lambda: u"图片%s存在" % ("" if ret else "not"),
+            "exists": lambda: u"图片%s存在" % ("" if res else u"不"),
             "text": lambda: u"输入文字:%s" % args.get('text'),
             "keyevent": lambda: u"点击[%s]按键" % args.get('keyname'),
             "sleep": lambda: u"等待%s秒" % args.get('secs'),
@@ -239,7 +253,7 @@ class LogToHtml(object):
             ret = ret()
         return ret
 
-    def _translate_title(self, name):
+    def _translate_title(self, name, step):
         title = {
             "touch": u"Touch",
             "swipe": u"Swipe",
@@ -274,6 +288,9 @@ class LogToHtml(object):
             print(output_file)
 
         return html
+
+    def is_pos(self, v):
+        return isinstance(v, (list, tuple))
 
     def copy_tree(self, src, dst):
         try:

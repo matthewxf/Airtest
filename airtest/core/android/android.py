@@ -15,11 +15,11 @@ from airtest.core.android.minitouch import Minitouch
 from airtest.core.android.javacap import Javacap
 from airtest.core.android.rotation import RotationWatcher, XYTransformer
 from airtest.core.android.recorder import Recorder
+
 LOGGING = get_logger(__name__)
 
 
 class Android(Device):
-
     """Android Device Class"""
 
     def __init__(self, serialno=None, host=None,
@@ -29,9 +29,7 @@ class Android(Device):
                  ori_method=ORI_METHOD.MINICAP,
                  ):
         super(Android, self).__init__()
-        if not ADB().devices(state="device"):
-            raise Exception("ADB devices not found")
-        self.serialno = serialno or ADB().devices(state="device")[0][0]
+        self.serialno = serialno or self.get_default_device()
         self.cap_method = cap_method.upper()
         self.touch_method = touch_method.upper()
         self.ime_method = ime_method.upper()
@@ -41,14 +39,27 @@ class Android(Device):
         self.adb.wait_for_device()
         self.sdk_version = self.adb.sdk_version
         self._display_info = {}
+        self._current_orientation = None
         # init components
         self.rotation_watcher = RotationWatcher(self.adb)
-        self.minicap = Minicap(self.adb, ori_method=self.ori_method)
+        self.minicap = Minicap(self.adb, ori_function=self.get_display_info)
         self.javacap = Javacap(self.adb)
-        self.minitouch = Minitouch(self.adb)
+        self.minitouch = Minitouch(self.adb, ori_function=self.get_display_info)
         self.yosemite_ime = YosemiteIme(self.adb)
         self.recorder = Recorder(self.adb)
         self._register_rotation_watcher()
+
+    def get_default_device(self):
+        """
+        Get local default device when no serailno
+
+        Returns:
+            local device serialno
+
+        """
+        if not ADB().devices(state="device"):
+            raise IndexError("ADB devices not found")
+        return ADB().devices(state="device")[0][0]
 
     @property
     def uuid(self):
@@ -107,6 +118,20 @@ class Android(Device):
         """
         return self.adb.start_app(package, activity)
 
+    def start_app_timing(self, package, activity):
+        """
+        Start the application and activity, and measure time
+
+        Args:
+            package: package name
+            activity: activity name
+
+        Returns:
+            app launch time
+
+        """
+        return self.adb.start_app_timing(package, activity)
+
     def stop_app(self, package):
         """
         Stop the application
@@ -146,6 +171,19 @@ class Android(Device):
 
         """
         return self.adb.install_app(filepath, replace=replace)
+
+    def install_multiple_app(self, filepath, replace=False):
+        """
+        Install multiple the application on the device
+
+        Args:
+            filepath: full path to the `apk` file to be installed on the device
+            replace: True or False to replace the existing application
+
+        Returns:
+            output from installation process
+        """
+        return self.adb.install_multiple_app(filepath, replace=replace)
 
     def uninstall_app(self, package):
         """
@@ -477,7 +515,14 @@ class Android(Device):
         """
         if not self._display_info:
             self._display_info = self.get_display_info()
-        return self._display_info
+        display_info = copy(self._display_info)
+        # update ow orientation, which is more accurate
+        if self._current_orientation is not None:
+            display_info.update({
+                "rotation": self._current_orientation * 90,
+                "orientation": self._current_orientation,
+            })
+        return display_info
 
     def get_display_info(self):
         """
@@ -490,7 +535,7 @@ class Android(Device):
         if self.ori_method == ORI_METHOD.MINICAP:
             display_info = self.minicap.get_display_info()
         else:
-            display_info = copy(self.adb.display_info)
+            display_info = self.adb.get_display_info()
         return display_info
 
     def get_current_resolution(self):
@@ -537,21 +582,15 @@ class Android(Device):
 
     def _register_rotation_watcher(self):
         """
-        Auto refresh `android.display` when rotation of screen has changed
+        Register callbacks for Android and minicap when rotation of screen has changed
+
+        callback is called in another thread, so be careful about thread-safety
 
         Returns:
             None
 
         """
-        def refresh_ori(ori):
-            data = {
-                "orientation": ori,
-                "rotation": ori * 90,
-            }
-            self.display_info.update(data)
-            self.adb.display_info.update(data)
-
-        self.rotation_watcher.reg_callback(refresh_ori)
+        self.rotation_watcher.reg_callback(lambda x: setattr(self, "_current_orientation", x))
         self.rotation_watcher.reg_callback(lambda x: self.minicap.update_rotation(x * 90))
 
     def _touch_point_by_orientation(self, tuple_xy):
