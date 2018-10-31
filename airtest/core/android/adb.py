@@ -590,7 +590,7 @@ class ADB(object):
         try:
             out = self.cmd(cmds)
         except AdbError as err:
-            if "UNSUPPORTED" in err.stderr:
+            if "UNSUPPORTED" in err.stderr or "Failed to create session" in err.stderr:
                 return self.install_app(filepath, replace)
             elif "Failed to finalize session" in err.stderr:
                 return "Success"
@@ -1160,8 +1160,10 @@ class ADB(object):
             True if package has been found
 
         """
-        output = self.shell(['dumpsys', 'package', package]).strip()
-        if package not in output:
+        output = self.shell(['dumpsys', 'package', package])
+        pattern = r'Package\s+\[' + str(package) + '\]'
+        match = re.search(pattern, output)
+        if match is None:
             raise AirtestError('package "{}" not found'.format(package))
         return True
 
